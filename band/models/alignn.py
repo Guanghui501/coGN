@@ -753,7 +753,7 @@ class ALIGNN(nn.Module):
 
         self.readout = AvgPooling()
 
-        self.graph_projection = ProjectionHead(embedding_dim=256)
+        self.graph_projection = ProjectionHead(embedding_dim=config.hidden_features)
         self.text_projection = ProjectionHead(embedding_dim=768)
 
         # Middle fusion modules
