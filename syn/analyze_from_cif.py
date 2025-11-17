@@ -249,11 +249,12 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
     print(f"   元素: {set(atoms.elements)}")
 
     # 构建图（使用静态方法直接生成 DGL 图）
+    # 注意：使用 atomic_number 特征以匹配训练时的配置
     g, lg = Graph.atom_dgl_multigraph(
         atoms=atoms,
         cutoff=cutoff,
         max_neighbors=max_neighbors,
-        atom_features="cgcnn",
+        atom_features="atomic_number",
         compute_line_graph=True,
         use_canonize=True
     )
