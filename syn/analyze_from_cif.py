@@ -65,16 +65,26 @@ def infer_model_config_from_state_dict(state_dict):
         'classification': False
     }
 
-    # 推断 atom_input_features 和 hidden_features（从 atom_embedding 层的权重形状）
+    # 推断 atom_input_features（从 atom_embedding 层的权重形状）
     if 'atom_embedding.layer.0.weight' in state_dict:
         # weight shape is [out_features, in_features]
         weight_shape = state_dict['atom_embedding.layer.0.weight'].shape
-        hidden_features = weight_shape[0]  # 输出维度
         atom_input_features = weight_shape[1]  # 输入维度
         config_kwargs['atom_input_features'] = atom_input_features
-        config_kwargs['hidden_features'] = hidden_features
         print(f"  🔍 检测到 atom_input_features: {atom_input_features}")
-        print(f"  🔍 检测到 hidden_features: {hidden_features}")
+
+    # 推断 hidden_features（从 ALIGNN 层的权重，比 atom_embedding 更准确）
+    # ALIGNNConv 使用 EdgeGatedGraphConv，检查 node_update 的权重
+    if 'alignn_layers.0.node_update.src_gate.weight' in state_dict:
+        # EdgeGatedGraphConv 的 src_gate 输入维度就是 hidden_features
+        hidden_features = state_dict['alignn_layers.0.node_update.src_gate.weight'].shape[1]
+        config_kwargs['hidden_features'] = hidden_features
+        print(f"  🔍 检测到 hidden_features (from ALIGNN layer): {hidden_features}")
+    elif 'atom_embedding.layer.0.weight' in state_dict:
+        # 回退到从 atom_embedding 推断
+        hidden_features = state_dict['atom_embedding.layer.0.weight'].shape[0]
+        config_kwargs['hidden_features'] = hidden_features
+        print(f"  🔍 检测到 hidden_features (from atom_embedding): {hidden_features}")
 
     # 检测跨模态注意力
     has_cross_modal = any('cross_modal_attention' in key for key in state_dict.keys())
