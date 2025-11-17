@@ -662,7 +662,8 @@ class ALIGNN(nn.Module):
 
         cls_emb = last_hidden_state[:, 0, :]
         text_emb = self.text_projection(cls_emb)
-        text_emb = torch.squeeze(text_emb)
+        # 不要 squeeze！保持 [batch_size, projection_dim] 的形状
+        # text_emb = torch.squeeze(text_emb)  # 这会导致 [1, 64] -> [64] 的错误
 
 
         # initial node features: atom feature network...
