@@ -81,7 +81,11 @@ class GraphStructureAnalyzer:
 
         # 计算边重要性（梯度的L2范数）
         edge_gradients = edge_features.grad
-        edge_importance = torch.norm(edge_gradients, dim=1).cpu().numpy()
+        # 处理不同维度的梯度
+        if edge_gradients.dim() == 1:
+            edge_importance = torch.abs(edge_gradients).cpu().numpy()
+        else:
+            edge_importance = torch.norm(edge_gradients, dim=1).cpu().numpy()
 
         # 恢复
         g.edata['r'] = original_edge_features
@@ -153,7 +157,11 @@ class GraphStructureAnalyzer:
 
         # 计算角度重要性
         angle_gradients = angle_features.grad
-        angle_importance = torch.norm(angle_gradients, dim=1).cpu().numpy()
+        # 处理不同维度的梯度
+        if angle_gradients.dim() == 1:
+            angle_importance = torch.abs(angle_gradients).cpu().numpy()
+        else:
+            angle_importance = torch.norm(angle_gradients, dim=1).cpu().numpy()
 
         # 恢复
         lg.edata['h'] = original_angle_features
