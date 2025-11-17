@@ -248,8 +248,8 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
     print(f"   原子数: {atoms.num_atoms}")
     print(f"   元素: {set(atoms.elements)}")
 
-    # 构建图
-    graph_obj = Graph(
+    # 构建图（使用静态方法直接生成 DGL 图）
+    g, lg = Graph.atom_dgl_multigraph(
         atoms=atoms,
         cutoff=cutoff,
         max_neighbors=max_neighbors,
@@ -257,9 +257,6 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
         compute_line_graph=True,
         use_canonize=True
     )
-
-    # 转换为 DGL 图
-    g, lg = graph_obj.to_dgl_graph()
 
     print(f"✅ 图构建成功")
     print(f"   节点数: {g.num_nodes()}")
