@@ -23,8 +23,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from jarvis.core.atoms import Atoms
 from jarvis.core.graphs import Graph
-from alignn.graphs import cgcnn_features as features
+from jarvis.core.specie import chem_data, get_node_attributes
 from transformers import BertTokenizer
+import numpy as np
 
 from band.models.alignn import ALIGNN, ALIGNNConfig
 from band.interpretability_enhanced import EnhancedInterpretabilityAnalyzer
@@ -96,6 +97,17 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
         compute_line_graph=True,
         use_canonize=True
     )
+
+    # Build feature lookup table (same as StructureDataset)
+    max_z = max(v["Z"] for v in chem_data.values())
+    template = get_node_attributes("C", atom_features="cgcnn")
+    features = np.zeros((1 + max_z, len(template)))
+
+    for element, v in chem_data.items():
+        z = v["Z"]
+        x = get_node_attributes(element, atom_features="cgcnn")
+        if x is not None:
+            features[z, :] = x
 
     # Convert atomic_number to cgcnn features
     z = g.ndata.pop("atom_features")
