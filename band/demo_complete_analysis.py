@@ -52,7 +52,7 @@ def complete_interpretability_analysis(
     print("🔬 完整可解释性分析")
     print("="*80)
     print(f"样本ID: {sample_id}")
-    print(f"原子数: {len(atoms_object)}")
+    print(f"原子数: {atoms_object.num_atoms}")
     print(f"化学式: {atoms_object.composition.reduced_formula}")
     print("="*80 + "\n")
 
@@ -221,7 +221,7 @@ def complete_interpretability_analysis(
 
         f.write(f"样本信息:\n")
         f.write(f"  化学式: {atoms_object.composition.reduced_formula}\n")
-        f.write(f"  原子数: {len(atoms_object)}\n")
+        f.write(f"  原子数: {atoms_object.num_atoms}\n")
         f.write(f"  边数: {g.num_edges()}\n\n")
 
         f.write(f"预测结果:\n")
@@ -244,7 +244,7 @@ def complete_interpretability_analysis(
         'sample_id': sample_id,
         'prediction': float(prediction),
         'true_value': float(true_value) if true_value is not None else None,
-        'num_atoms': len(atoms_object),
+        'num_atoms': atoms_object.num_atoms,
         'num_edges': g.num_edges(),
         'insights': insights,
         'files_generated': [

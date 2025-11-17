@@ -245,7 +245,7 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
 
     print(f"✅ CIF 读取成功")
     print(f"   化学式: {atoms.composition.reduced_formula}")
-    print(f"   原子数: {len(atoms)}")
+    print(f"   原子数: {atoms.num_atoms}")
     print(f"   元素: {set(atoms.elements)}")
 
     # 构建图
