@@ -65,12 +65,16 @@ def infer_model_config_from_state_dict(state_dict):
         'classification': False
     }
 
-    # 推断 atom_input_features（从 atom_embedding 层的输入维度）
+    # 推断 atom_input_features 和 hidden_features（从 atom_embedding 层的权重形状）
     if 'atom_embedding.layer.0.weight' in state_dict:
         # weight shape is [out_features, in_features]
-        atom_input_features = state_dict['atom_embedding.layer.0.weight'].shape[1]
+        weight_shape = state_dict['atom_embedding.layer.0.weight'].shape
+        hidden_features = weight_shape[0]  # 输出维度
+        atom_input_features = weight_shape[1]  # 输入维度
         config_kwargs['atom_input_features'] = atom_input_features
+        config_kwargs['hidden_features'] = hidden_features
         print(f"  🔍 检测到 atom_input_features: {atom_input_features}")
+        print(f"  🔍 检测到 hidden_features: {hidden_features}")
 
     # 检测跨模态注意力
     has_cross_modal = any('cross_modal_attention' in key for key in state_dict.keys())
@@ -291,14 +295,16 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
     # 转换特征（与 StructureDataset.__init__ 中的代码相同）
     z = g.ndata.pop("atom_features")
     g.ndata["atomic_number"] = z
-    z = z.type(torch.IntTensor).squeeze()
-    f = torch.tensor(features[z]).type(torch.FloatTensor)
+    z = z.type(torch.LongTensor).squeeze()  # 使用 LongTensor 进行索引
+    f = torch.tensor(features[z], dtype=torch.float32)  # 明确指定 float32
     if g.num_nodes() == 1:
         f = f.unsqueeze(0)
     g.ndata["atom_features"] = f
 
     print(f"✅ 特征转换完成")
+    print(f"   原子序数: {z[:5].tolist() if len(z) > 5 else z.tolist()}")
     print(f"   特征维度: {g.ndata['atom_features'].shape}")
+    print(f"   特征数据类型: {g.ndata['atom_features'].dtype}")
 
     return g, lg, atoms
 
@@ -320,8 +326,24 @@ def predict(model, g, lg, text, device='cuda'):
     """
     model.eval()
 
+    # 检查图移动前的特征
+    print(f"\n🔍 图移动到设备前:")
+    print(f"   atom_features 形状: {g.ndata['atom_features'].shape}")
+    print(f"   atom_features 数据类型: {g.ndata['atom_features'].dtype}")
+    print(f"   atom_features 设备: {g.ndata['atom_features'].device}")
+    if 'atomic_number' in g.ndata:
+        print(f"   atomic_number 存在: {g.ndata['atomic_number'].shape}")
+
     g = g.to(device)
     lg = lg.to(device)
+
+    # 检查图移动后的特征
+    print(f"\n🔍 图移动到设备后:")
+    print(f"   atom_features 形状: {g.ndata['atom_features'].shape}")
+    print(f"   atom_features 数据类型: {g.ndata['atom_features'].dtype}")
+    print(f"   atom_features 设备: {g.ndata['atom_features'].device}")
+    if 'atomic_number' in g.ndata:
+        print(f"   atomic_number 存在: {g.ndata['atomic_number'].shape}")
 
     with torch.no_grad():
         output = model([g, lg, text], return_features=True, return_attention=True)
