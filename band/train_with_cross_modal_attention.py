@@ -132,6 +132,19 @@ def get_parser():
     parser.add_argument('--middle_fusion_dropout', type=float, default=0.1,
                         help='中期融合dropout率')
 
+    # 细粒度注意力参数（原子-文本token级别）⭐ NEW!
+    parser.add_argument('--use_fine_grained_attention', type=bool, default=False,
+                        help='是否使用细粒度注意力（原子-文本token级别）')
+    parser.add_argument('--fine_grained_hidden_dim', type=int, default=256,
+                        help='细粒度注意力隐藏层维度')
+    parser.add_argument('--fine_grained_num_heads', type=int, default=8,
+                        choices=[1, 2, 4, 8],
+                        help='细粒度注意力头数')
+    parser.add_argument('--fine_grained_dropout', type=float, default=0.1,
+                        help='细粒度注意力dropout率')
+    parser.add_argument('--fine_grained_use_projection', type=bool, default=True,
+                        help='细粒度注意力是否使用投影层')
+
     # 对比学习参数
     parser.add_argument('--use_contrastive', type=bool, default=False,
                         help='是否使用对比学习损失')
@@ -421,6 +434,12 @@ def create_config(args):
         use_contrastive_loss=args.use_contrastive,
         contrastive_loss_weight=args.contrastive_weight,
         contrastive_temperature=args.contrastive_temperature,
+        # 细粒度注意力配置（原子-文本token级别）⭐ NEW!
+        use_fine_grained_attention=args.use_fine_grained_attention,
+        fine_grained_hidden_dim=args.fine_grained_hidden_dim,
+        fine_grained_num_heads=args.fine_grained_num_heads,
+        fine_grained_dropout=args.fine_grained_dropout,
+        fine_grained_use_projection=args.fine_grained_use_projection,
         link="identity",
         zero_inflated=False,
         classification=False
@@ -524,6 +543,14 @@ def main():
         print(f"  隐藏维度: {args.middle_fusion_hidden_dim}")
         print(f"  注意力头数: {args.middle_fusion_num_heads}")
         print(f"  Dropout率: {args.middle_fusion_dropout}")
+
+    print(f"\n细粒度注意力配置（原子-文本token级别）:")
+    print(f"  启用: {args.use_fine_grained_attention}")
+    if args.use_fine_grained_attention:
+        print(f"  隐藏维度: {args.fine_grained_hidden_dim}")
+        print(f"  注意力头数: {args.fine_grained_num_heads}")
+        print(f"  Dropout率: {args.fine_grained_dropout}")
+        print(f"  使用投影: {args.fine_grained_use_projection}")
 
     print(f"\n对比学习配置:")
     print(f"  启用: {args.use_contrastive}")
