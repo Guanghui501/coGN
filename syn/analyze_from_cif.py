@@ -265,6 +265,34 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
     print(f"   Line graph 节点数: {lg.num_nodes()}")
     print(f"   Line graph 边数: {lg.num_edges()}")
 
+    # 转换原子特征：atomic_number -> cgcnn features
+    # 这一步匹配训练时 StructureDataset 的特征转换
+    from jarvis.core.specie import chem_data, get_node_attributes
+    import numpy as np
+
+    # 构建特征查找表（与 StructureDataset._get_attribute_lookup 相同）
+    max_z = max(v["Z"] for v in chem_data.values())
+    template = get_node_attributes("C", atom_features="cgcnn")
+    features = np.zeros((1 + max_z, len(template)))
+
+    for element, v in chem_data.items():
+        z = v["Z"]
+        x = get_node_attributes(element, atom_features="cgcnn")
+        if x is not None:
+            features[z, :] = x
+
+    # 转换特征（与 StructureDataset.__init__ 中的代码相同）
+    z = g.ndata.pop("atom_features")
+    g.ndata["atomic_number"] = z
+    z = z.type(torch.IntTensor).squeeze()
+    f = torch.tensor(features[z]).type(torch.FloatTensor)
+    if g.num_nodes() == 1:
+        f = f.unsqueeze(0)
+    g.ndata["atom_features"] = f
+
+    print(f"✅ 特征转换完成")
+    print(f"   特征维度: {g.ndata['atom_features'].shape}")
+
     return g, lg, atoms
 
 
