@@ -86,7 +86,7 @@ def cif_to_graph(cif_path, cutoff=8.0, max_neighbors=12):
     """Convert CIF file to DGL graph."""
 
     # Read structure
-    atoms = Atoms.from_poscar(cif_path)
+    atoms = Atoms.from_cif(cif_path)
 
     # Create graph using JARVIS
     g, lg = Graph.atom_dgl_multigraph(
