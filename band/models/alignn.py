@@ -349,6 +349,185 @@ class CrossModalAttention(nn.Module):
             return enhanced_graph, enhanced_text
 
 
+class FineGrainedCrossModalAttention(nn.Module):
+    """Fine-grained cross-modal attention between atoms and text tokens.
+
+    This module enables atom-level and token-level attention:
+    - Each atom attends to all text tokens
+    - Each text token attends to all atoms
+
+    This provides detailed interpretability by showing which atoms
+    attend to which words in the text description.
+    """
+
+    def __init__(self, node_dim=256, token_dim=768, hidden_dim=256,
+                 num_heads=8, dropout=0.1, use_projection=True):
+        """Initialize fine-grained cross-modal attention.
+
+        Args:
+            node_dim: Dimension of node (atom) features
+            token_dim: Dimension of text token features (e.g., 768 for BERT)
+            hidden_dim: Hidden dimension for attention computation
+            num_heads: Number of attention heads
+            dropout: Dropout rate
+            use_projection: Whether to project inputs to same dimension
+        """
+        super().__init__()
+        self.node_dim = node_dim
+        self.token_dim = token_dim
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+
+        self.use_projection = use_projection
+
+        # Input projections (optional, to match dimensions)
+        if use_projection:
+            self.node_proj_in = nn.Linear(node_dim, hidden_dim)
+            self.token_proj_in = nn.Linear(token_dim, hidden_dim)
+
+        # Atom-to-Token attention (atoms query tokens)
+        self.a2t_query = nn.Linear(hidden_dim if use_projection else node_dim, hidden_dim)
+        self.a2t_key = nn.Linear(hidden_dim if use_projection else token_dim, hidden_dim)
+        self.a2t_value = nn.Linear(hidden_dim if use_projection else token_dim, hidden_dim)
+
+        # Token-to-Atom attention (tokens query atoms)
+        self.t2a_query = nn.Linear(hidden_dim if use_projection else token_dim, hidden_dim)
+        self.t2a_key = nn.Linear(hidden_dim if use_projection else node_dim, hidden_dim)
+        self.t2a_value = nn.Linear(hidden_dim if use_projection else node_dim, hidden_dim)
+
+        # Output projections
+        self.node_output = nn.Linear(hidden_dim, node_dim)
+        self.token_output = nn.Linear(hidden_dim, token_dim)
+
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm_node = nn.LayerNorm(node_dim)
+        self.layer_norm_token = nn.LayerNorm(token_dim)
+
+        self.scale = self.head_dim ** -0.5
+
+    def split_heads(self, x):
+        """Split the last dimension into (num_heads, head_dim).
+
+        Args:
+            x: [batch_size, seq_len, hidden_dim]
+        Returns:
+            [batch_size, num_heads, seq_len, head_dim]
+        """
+        batch_size, seq_len, _ = x.size()
+        x = x.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        return x.permute(0, 2, 1, 3)  # (batch, heads, seq, head_dim)
+
+    def forward(self, node_feat, token_feat, node_mask=None, token_mask=None,
+                return_attention=False):
+        """Forward pass of fine-grained cross-modal attention.
+
+        Args:
+            node_feat: Node features [batch_size, num_atoms, node_dim]
+            token_feat: Token features [batch_size, seq_len, token_dim]
+            node_mask: Optional mask for padded nodes [batch_size, num_atoms]
+            token_mask: Optional mask for padded tokens [batch_size, seq_len]
+            return_attention: Whether to return attention weights
+
+        Returns:
+            enhanced_nodes: Enhanced node features [batch_size, num_atoms, node_dim]
+            enhanced_tokens: Enhanced token features [batch_size, seq_len, token_dim]
+            attention_weights: (optional) Dict with 'atom_to_text' and 'text_to_atom'
+        """
+        batch_size = node_feat.size(0)
+        num_atoms = node_feat.size(1)
+        seq_len = token_feat.size(1)
+
+        # Store original features for residual connection
+        node_feat_orig = node_feat
+        token_feat_orig = token_feat
+
+        # Optional input projection
+        if self.use_projection:
+            node_feat = self.node_proj_in(node_feat)  # [batch, num_atoms, hidden]
+            token_feat = self.token_proj_in(token_feat)  # [batch, seq_len, hidden]
+
+        attention_weights = {} if return_attention else None
+
+        # ============ Atom-to-Token Attention ============
+        # Atoms attend to tokens: which words does each atom focus on?
+        Q_a2t = self.a2t_query(node_feat)   # [batch, num_atoms, hidden]
+        K_a2t = self.a2t_key(token_feat)    # [batch, seq_len, hidden]
+        V_a2t = self.a2t_value(token_feat)  # [batch, seq_len, hidden]
+
+        # Multi-head attention
+        Q_a2t = self.split_heads(Q_a2t)  # [batch, heads, num_atoms, head_dim]
+        K_a2t = self.split_heads(K_a2t)  # [batch, heads, seq_len, head_dim]
+        V_a2t = self.split_heads(V_a2t)  # [batch, heads, seq_len, head_dim]
+
+        # Attention scores: [batch, heads, num_atoms, seq_len]
+        attn_a2t = torch.matmul(Q_a2t, K_a2t.transpose(-2, -1)) * self.scale
+
+        # Apply token mask if provided (mask out padding tokens)
+        if token_mask is not None:
+            # token_mask: [batch, seq_len] -> [batch, 1, 1, seq_len]
+            token_mask_expanded = token_mask.unsqueeze(1).unsqueeze(2)
+            attn_a2t = attn_a2t.masked_fill(~token_mask_expanded, float('-inf'))
+
+        attn_a2t = F.softmax(attn_a2t, dim=-1)
+
+        if return_attention:
+            # Store attention weights: [batch, heads, num_atoms, seq_len]
+            attention_weights['atom_to_text'] = attn_a2t.detach()
+
+        attn_a2t = self.dropout(attn_a2t)
+
+        # Apply attention: [batch, heads, num_atoms, head_dim]
+        context_a2t = torch.matmul(attn_a2t, V_a2t)
+        context_a2t = context_a2t.permute(0, 2, 1, 3).contiguous()
+        context_a2t = context_a2t.view(batch_size, num_atoms, self.hidden_dim)
+        context_a2t = self.node_output(context_a2t)  # [batch, num_atoms, node_dim]
+
+        # ============ Token-to-Atom Attention ============
+        # Tokens attend to atoms: which atoms does each word focus on?
+        Q_t2a = self.t2a_query(token_feat)  # [batch, seq_len, hidden]
+        K_t2a = self.t2a_key(node_feat)     # [batch, num_atoms, hidden]
+        V_t2a = self.t2a_value(node_feat)   # [batch, num_atoms, hidden]
+
+        # Multi-head attention
+        Q_t2a = self.split_heads(Q_t2a)  # [batch, heads, seq_len, head_dim]
+        K_t2a = self.split_heads(K_t2a)  # [batch, heads, num_atoms, head_dim]
+        V_t2a = self.split_heads(V_t2a)  # [batch, heads, num_atoms, head_dim]
+
+        # Attention scores: [batch, heads, seq_len, num_atoms]
+        attn_t2a = torch.matmul(Q_t2a, K_t2a.transpose(-2, -1)) * self.scale
+
+        # Apply node mask if provided (mask out padding atoms)
+        if node_mask is not None:
+            # node_mask: [batch, num_atoms] -> [batch, 1, 1, num_atoms]
+            node_mask_expanded = node_mask.unsqueeze(1).unsqueeze(2)
+            attn_t2a = attn_t2a.masked_fill(~node_mask_expanded, float('-inf'))
+
+        attn_t2a = F.softmax(attn_t2a, dim=-1)
+
+        if return_attention:
+            # Store attention weights: [batch, heads, seq_len, num_atoms]
+            attention_weights['text_to_atom'] = attn_t2a.detach()
+
+        attn_t2a = self.dropout(attn_t2a)
+
+        # Apply attention: [batch, heads, seq_len, head_dim]
+        context_t2a = torch.matmul(attn_t2a, V_t2a)
+        context_t2a = context_t2a.permute(0, 2, 1, 3).contiguous()
+        context_t2a = context_t2a.view(batch_size, seq_len, self.hidden_dim)
+        context_t2a = self.token_output(context_t2a)  # [batch, seq_len, token_dim]
+
+        # Residual connection and layer normalization
+        enhanced_nodes = self.layer_norm_node(node_feat_orig + context_a2t)
+        enhanced_tokens = self.layer_norm_token(token_feat_orig + context_t2a)
+
+        if return_attention:
+            return enhanced_nodes, enhanced_tokens, attention_weights
+        else:
+            return enhanced_nodes, enhanced_tokens
+
+
 class ALIGNNConfig(BaseSettings):
     """Hyperparameter schema for jarvisdgl.models.alignn."""
 
@@ -369,6 +548,13 @@ class ALIGNNConfig(BaseSettings):
     cross_modal_hidden_dim: int = 256
     cross_modal_num_heads: int = 4
     cross_modal_dropout: float = 0.1
+
+    # Fine-grained attention settings (NEW!)
+    use_fine_grained_attention: bool = False  # Enable fine-grained atom-token attention
+    fine_grained_hidden_dim: int = 256
+    fine_grained_num_heads: int = 8
+    fine_grained_dropout: float = 0.1
+    fine_grained_use_projection: bool = True  # Project inputs to same dimension
 
     # Middle fusion settings
     use_middle_fusion: bool = False
@@ -586,7 +772,19 @@ class ALIGNN(nn.Module):
                 )
             self.middle_fusion_layer_indices = fusion_layers
 
-        # Cross-modal attention module
+        # Fine-grained cross-modal attention module (atom-token level)
+        self.use_fine_grained_attention = config.use_fine_grained_attention
+        if self.use_fine_grained_attention:
+            self.fine_grained_attention = FineGrainedCrossModalAttention(
+                node_dim=config.hidden_features,  # Node features from ALIGNN layers
+                token_dim=768,  # BERT token dimension
+                hidden_dim=config.fine_grained_hidden_dim,
+                num_heads=config.fine_grained_num_heads,
+                dropout=config.fine_grained_dropout,
+                use_projection=config.fine_grained_use_projection
+            )
+
+        # Cross-modal attention module (global level, for backward compatibility)
         self.use_cross_modal_attention = config.use_cross_modal_attention
         if self.use_cross_modal_attention:
             self.cross_modal_attention = CrossModalAttention(
@@ -651,19 +849,21 @@ class ALIGNN(nn.Module):
         g = g.local_var()
 
 
-        # CLS Embedding
+        # Text Encoding
         norm_sents = [normalize(s) for s in text]
         encodings = tokenizer(norm_sents, return_tensors='pt', padding=True, truncation=True)
         if torch.cuda.is_available():
             encodings.to(device)
         with torch.no_grad():
-            # last_hidden_state = self.text_model(**encodings)[0]
-            last_hidden_state = text_model(**encodings)[0]
+            last_hidden_state = text_model(**encodings)[0]  # [batch, seq_len, 768]
 
-        cls_emb = last_hidden_state[:, 0, :]
-        text_emb = self.text_projection(cls_emb)
-        # 不要 squeeze！保持 [batch_size, projection_dim] 的形状
-        # text_emb = torch.squeeze(text_emb)  # 这会导致 [1, 64] -> [64] 的错误
+        # For fine-grained attention: keep all tokens
+        text_tokens = last_hidden_state  # [batch, seq_len, 768]
+        attention_mask = encodings['attention_mask']  # [batch, seq_len]
+
+        # For backward compatibility: CLS token + projection
+        cls_emb = last_hidden_state[:, 0, :]  # [batch, 768]
+        text_emb = self.text_projection(cls_emb)  # [batch, 64]
 
 
         # initial node features: atom feature network...
@@ -687,6 +887,55 @@ class ALIGNN(nn.Module):
         # gated GCN updates: update node, edge features
         for gcn_layer in self.gcn_layers:
             x, y = gcn_layer(g, x, y)
+
+        # Fine-grained cross-modal attention (before readout)
+        fine_grained_attention_weights = None
+        if self.use_fine_grained_attention:
+            # Convert node features from DGL format to batched format
+            # DGL batches graphs by concatenating: x is [total_atoms, node_dim]
+            # We need [batch_size, max_atoms, node_dim] for attention
+            batch_num_nodes = g.batch_num_nodes().tolist()  # List of num_atoms per graph
+            batch_size = len(batch_num_nodes)
+            max_atoms = max(batch_num_nodes)
+            node_dim = x.size(1)
+
+            # Split and pad node features
+            node_features_batched = torch.zeros(batch_size, max_atoms, node_dim,
+                                                 device=x.device, dtype=x.dtype)
+            node_mask = torch.zeros(batch_size, max_atoms, device=x.device, dtype=torch.bool)
+
+            offset = 0
+            for i, num_nodes in enumerate(batch_num_nodes):
+                node_features_batched[i, :num_nodes] = x[offset:offset+num_nodes]
+                node_mask[i, :num_nodes] = True
+                offset += num_nodes
+
+            # Apply fine-grained attention
+            if return_attention:
+                enhanced_nodes, enhanced_tokens, fine_grained_attention_weights = \
+                    self.fine_grained_attention(
+                        node_features_batched,
+                        text_tokens,
+                        node_mask=node_mask,
+                        token_mask=attention_mask.bool(),
+                        return_attention=True
+                    )
+            else:
+                enhanced_nodes, enhanced_tokens = self.fine_grained_attention(
+                    node_features_batched,
+                    text_tokens,
+                    node_mask=node_mask,
+                    token_mask=attention_mask.bool()
+                )
+
+            # Convert back to DGL format: [batch, max_atoms, node_dim] -> [total_atoms, node_dim]
+            x_enhanced = torch.zeros_like(x)
+            offset = 0
+            for i, num_nodes in enumerate(batch_num_nodes):
+                x_enhanced[offset:offset+num_nodes] = enhanced_nodes[i, :num_nodes]
+                offset += num_nodes
+
+            x = x_enhanced  # Use enhanced node features
 
         # norm-activation-pool-classify
         graph_emb = self.readout(g, x)
@@ -731,8 +980,13 @@ class ALIGNN(nn.Module):
             }
 
             # Add attention weights if requested (for interpretability)
-            if return_attention and attention_weights is not None:
-                output_dict['attention_weights'] = attention_weights
+            if return_attention:
+                # Global attention weights (backward compatibility)
+                if attention_weights is not None:
+                    output_dict['attention_weights'] = attention_weights
+                # Fine-grained attention weights (new!)
+                if fine_grained_attention_weights is not None:
+                    output_dict['fine_grained_attention_weights'] = fine_grained_attention_weights
 
             # Compute contrastive loss if enabled
             if self.use_contrastive_loss and self.training:

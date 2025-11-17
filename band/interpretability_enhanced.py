@@ -85,7 +85,7 @@ class EnhancedInterpretabilityAnalyzer:
             result['graph_features'] = output.get('graph_features', None)
             result['text_features'] = output.get('text_features', None)
 
-            # 提取注意力权重
+            # 提取全局注意力权重（向后兼容）
             if 'attention_weights' in output:
                 attn = output['attention_weights']
                 result['attention_weights'] = {
@@ -94,6 +94,16 @@ class EnhancedInterpretabilityAnalyzer:
                 }
             else:
                 result['attention_weights'] = None
+
+            # 提取细粒度注意力权重（新增）
+            if 'fine_grained_attention_weights' in output:
+                fg_attn = output['fine_grained_attention_weights']
+                result['fine_grained_attention_weights'] = {
+                    'atom_to_text': fg_attn.get('atom_to_text', None),  # [batch, heads, num_atoms, seq_len]
+                    'text_to_atom': fg_attn.get('text_to_atom', None)   # [batch, heads, seq_len, num_atoms]
+                }
+            else:
+                result['fine_grained_attention_weights'] = None
         else:
             result['prediction'] = output.cpu().numpy()
             result['attention_weights'] = None
@@ -654,6 +664,171 @@ class EnhancedInterpretabilityAnalyzer:
         print(f"\n{'='*80}\n")
 
         return explanation
+
+    def visualize_fine_grained_attention(
+        self,
+        attention_weights,
+        atoms_object,
+        text_tokens,
+        save_path=None,
+        top_k_atoms=10,
+        top_k_words=15,
+        show_all_heads=False
+    ):
+        """
+        可视化细粒度注意力权重（原子-文本token级别）
+
+        Args:
+            attention_weights: 细粒度注意力权重字典
+                - 'atom_to_text': [batch, heads, num_atoms, seq_len]
+                - 'text_to_atom': [batch, heads, seq_len, num_atoms]
+            atoms_object: Atoms对象（JARVIS）
+            text_tokens: 文本tokens列表（解码后的词语）
+            save_path: 保存路径
+            top_k_atoms: 显示top-k重要的原子
+            top_k_words: 显示top-k重要的词语
+            show_all_heads: 是否显示所有注意力头
+
+        Returns:
+            分析结果字典
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import numpy as np
+
+        if attention_weights is None:
+            print("⚠️  没有细粒度注意力权重")
+            return None
+
+        atom_to_text = attention_weights.get('atom_to_text', None)
+        text_to_atom = attention_weights.get('text_to_atom', None)
+
+        if atom_to_text is None and text_to_atom is None:
+            print("⚠️  没有找到细粒度注意力权重")
+            return None
+
+        # Convert to numpy
+        if atom_to_text is not None:
+            atom_to_text = atom_to_text.cpu().numpy()  # [batch, heads, num_atoms, seq_len]
+        if text_to_atom is not None:
+            text_to_atom = text_to_atom.cpu().numpy()  # [batch, heads, seq_len, num_atoms]
+
+        # For single sample (batch_size=1)
+        if atom_to_text is not None:
+            atom_to_text = atom_to_text[0]  # [heads, num_atoms, seq_len]
+        if text_to_atom is not None:
+            text_to_atom = text_to_atom[0]  # [heads, seq_len, num_atoms]
+
+        num_heads = atom_to_text.shape[0] if atom_to_text is not None else text_to_atom.shape[0]
+        num_atoms = atom_to_text.shape[1] if atom_to_text is not None else text_to_atom.shape[2]
+        seq_len = atom_to_text.shape[2] if atom_to_text is not None else text_to_atom.shape[1]
+
+        # Get atom elements
+        elements = [str(atoms_object.elements[i]) for i in range(num_atoms)]
+
+        # Average over heads
+        atom_to_text_avg = atom_to_text.mean(axis=0) if atom_to_text is not None else None  # [num_atoms, seq_len]
+        text_to_atom_avg = text_to_atom.mean(axis=0) if text_to_atom is not None else None  # [seq_len, num_atoms]
+
+        # Create visualization
+        if show_all_heads:
+            # Show each head separately
+            fig, axes = plt.subplots(2, num_heads//2 + num_heads%2, figsize=(20, 8))
+            axes = axes.flatten()
+
+            for head in range(num_heads):
+                sns.heatmap(
+                    atom_to_text[head],
+                    xticklabels=text_tokens[:seq_len],
+                    yticklabels=elements,
+                    cmap='YlOrRd',
+                    ax=axes[head],
+                    cbar=True
+                )
+                axes[head].set_title(f'Head {head+1}')
+                axes[head].set_xlabel('Text Tokens')
+                axes[head].set_ylabel('Atoms')
+
+            plt.tight_layout()
+        else:
+            # Show averaged attention
+            fig, axes = plt.subplots(1, 2, figsize=(20, max(8, num_atoms * 0.5)))
+
+            # Atom-to-Text attention heatmap
+            if atom_to_text_avg is not None:
+                sns.heatmap(
+                    atom_to_text_avg,
+                    xticklabels=text_tokens[:seq_len],
+                    yticklabels=elements,
+                    cmap='YlOrRd',
+                    ax=axes[0],
+                    cbar=True,
+                    annot=num_atoms <= 10 and seq_len <= 20  # Only annotate if small enough
+                )
+                axes[0].set_title('Atom → Text Attention\n(Which words does each atom attend to?)', fontsize=12)
+                axes[0].set_xlabel('Text Tokens', fontsize=10)
+                axes[0].set_ylabel('Atoms (Element)', fontsize=10)
+                plt.setp(axes[0].get_xticklabels(), rotation=45, ha='right', fontsize=8)
+
+            # Text-to-Atom attention heatmap
+            if text_to_atom_avg is not None:
+                sns.heatmap(
+                    text_to_atom_avg,
+                    xticklabels=elements,
+                    yticklabels=text_tokens[:seq_len],
+                    cmap='YlGnBu',
+                    ax=axes[1],
+                    cbar=True,
+                    annot=num_atoms <= 10 and seq_len <= 20
+                )
+                axes[1].set_title('Text → Atom Attention\n(Which atoms does each word attend to?)', fontsize=12)
+                axes[1].set_xlabel('Atoms (Element)', fontsize=10)
+                axes[1].set_ylabel('Text Tokens', fontsize=10)
+                plt.setp(axes[1].get_yticklabels(), rotation=0, fontsize=8)
+
+            plt.suptitle('Fine-Grained Cross-Modal Attention', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"✅ 细粒度注意力可视化已保存: {save_path}")
+
+        plt.close()
+
+        # Analyze patterns
+        analysis = {}
+
+        if atom_to_text_avg is not None:
+            # Top words attended by each atom
+            analysis['atom_top_words'] = {}
+            for i, element in enumerate(elements):
+                top_word_indices = atom_to_text_avg[i].argsort()[-top_k_words:][::-1]
+                top_words = [(text_tokens[idx], atom_to_text_avg[i, idx]) for idx in top_word_indices]
+                analysis['atom_top_words'][f"{element}_{i}"] = top_words
+
+            # Overall most important words (averaged over all atoms)
+            word_importance = atom_to_text_avg.mean(axis=0)  # [seq_len]
+            top_word_indices = word_importance.argsort()[-top_k_words:][::-1]
+            analysis['overall_top_words'] = [
+                (text_tokens[idx], word_importance[idx]) for idx in top_word_indices
+            ]
+
+        if text_to_atom_avg is not None:
+            # Top atoms attended by each word
+            analysis['word_top_atoms'] = {}
+            for i, token in enumerate(text_tokens[:seq_len]):
+                top_atom_indices = text_to_atom_avg[i].argsort()[-top_k_atoms:][::-1]
+                top_atoms = [(f"{elements[idx]}_{idx}", text_to_atom_avg[i, idx]) for idx in top_atom_indices]
+                analysis['word_top_atoms'][token] = top_atoms
+
+            # Overall most important atoms (averaged over all words)
+            atom_importance = text_to_atom_avg.mean(axis=0)  # [num_atoms]
+            top_atom_indices = atom_importance.argsort()[-top_k_atoms:][::-1]
+            analysis['overall_top_atoms'] = [
+                (f"{elements[idx]}_{idx}", atom_importance[idx]) for idx in top_atom_indices
+            ]
+
+        return analysis
 
 
 def batch_interpretability_analysis(
