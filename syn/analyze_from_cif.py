@@ -65,6 +65,13 @@ def infer_model_config_from_state_dict(state_dict):
         'classification': False
     }
 
+    # 推断 atom_input_features（从 atom_embedding 层的输入维度）
+    if 'atom_embedding.layer.0.weight' in state_dict:
+        # weight shape is [out_features, in_features]
+        atom_input_features = state_dict['atom_embedding.layer.0.weight'].shape[1]
+        config_kwargs['atom_input_features'] = atom_input_features
+        print(f"  🔍 检测到 atom_input_features: {atom_input_features}")
+
     # 检测跨模态注意力
     has_cross_modal = any('cross_modal_attention' in key for key in state_dict.keys())
     if has_cross_modal:
