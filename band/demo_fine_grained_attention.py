@@ -223,7 +223,110 @@ def analyze_with_fine_grained_attention(
 
     print(f"\n{'='*80}\n")
 
-    return analysis
+    # Advanced analysis 1: Attention head specialization
+    print("\n📊 Running advanced interpretability analysis...")
+    print("   [1/4] Analyzing attention head specialization...")
+    head_analysis = analyzer.analyze_attention_head_specialization(
+        attention_weights=fg_attn,
+        atoms_object=atoms_object,
+        text_tokens=tokens,
+        save_path=save_dir / 'head_specialization.png' if save_dir else 'head_specialization.png'
+    )
+
+    if head_analysis:
+        print(f"\n🎯 Attention Head Specialization:")
+        print(f"   - Head diversity score: {head_analysis['head_diversity']:.3f}")
+        print(f"   - Most important head: {max(head_analysis['head_importance'].items(), key=lambda x: x[1])[0]}")
+
+        # Show top 3 most specialized heads
+        print(f"\n   Top 3 Most Focused Heads:")
+        sorted_heads = sorted(head_analysis['head_entropy'].items(), key=lambda x: x[1])[:3]
+        for head_name, entropy in sorted_heads:
+            pattern = head_analysis['head_patterns'][head_name]
+            top_word = pattern['top_words'][0][0] if pattern['top_words'] else 'N/A'
+            print(f"   - {head_name}: Entropy={entropy:.2f}, Top word='{top_word}'")
+
+    # Advanced analysis 2: Key atom-word pairs
+    print("\n   [2/4] Analyzing key atom-word pairs...")
+    pairs_analysis = analyzer.analyze_key_atom_word_pairs(
+        attention_weights=fg_attn,
+        atoms_object=atoms_object,
+        text_tokens=tokens,
+        top_k=20,
+        save_path=save_dir / 'key_atom_word_pairs.png' if save_dir else 'key_atom_word_pairs.png'
+    )
+
+    if pairs_analysis:
+        print(f"\n🔗 Top 10 Atom-Word Pairs:")
+        for i, pair in enumerate(pairs_analysis['top_pairs'][:10], 1):
+            print(f"   {i}. {pair['atom']} ←→ '{pair['word']}' (weight: {pair['weight']:.4f})")
+
+        if pairs_analysis.get('category_stats'):
+            print(f"\n   Semantic Category Distribution:")
+            for cat, stats in pairs_analysis['category_stats'].items():
+                cat_name = cat.replace('_', ' ').title()
+                print(f"   - {cat_name}: {stats['count']} pairs ({stats['percentage']:.1f}%)")
+
+    # Advanced analysis 3: Attention statistics
+    print("\n   [3/4] Computing attention distribution statistics...")
+    stats_analysis = analyzer.analyze_attention_statistics(
+        attention_weights=fg_attn,
+        atoms_object=atoms_object,
+        text_tokens=tokens,
+        save_path=save_dir / 'attention_statistics.png' if save_dir else 'attention_statistics.png'
+    )
+
+    if stats_analysis:
+        global_stats = stats_analysis['global_stats']
+        print(f"\n📈 Attention Distribution Statistics:")
+        print(f"   - Mean attention: {global_stats['mean']:.4f}")
+        print(f"   - Entropy: {global_stats['entropy']:.2f}")
+        print(f"   - Sparsity: {global_stats['sparsity']:.1f}%")
+        print(f"   - Effective connections: {global_stats['effective_connections']:.1f}%")
+
+        # Show most focused atoms
+        print(f"\n   Most Focused Atoms (low entropy):")
+        sorted_atoms = sorted(stats_analysis['per_atom_stats'].items(),
+                            key=lambda x: x[1]['entropy'])[:3]
+        for atom_name, atom_stats in sorted_atoms:
+            print(f"   - {atom_name}: Entropy={atom_stats['entropy']:.2f}, Top word='{atom_stats['top_word']}'")
+
+    # Advanced analysis 4: Text semantic regions
+    print("\n   [4/4] Analyzing text semantic regions...")
+    region_analysis = analyzer.analyze_text_semantic_regions(
+        attention_weights=fg_attn,
+        atoms_object=atoms_object,
+        text=text,
+        text_tokens=tokens,
+        save_path=save_dir / 'text_semantic_regions.png' if save_dir else 'text_semantic_regions.png'
+    )
+
+    if region_analysis and region_analysis.get('regions'):
+        print(f"\n📝 Text Semantic Regions (Top 5 most important):")
+        for i, region in enumerate(region_analysis['regions'][:5], 1):
+            print(f"\n   Region {i} (ID: {region['region_id'] + 1}):")
+            print(f"   Text: \"{region['text']}\"")
+            print(f"   Importance: {region['avg_importance']:.4f} ({region['contribution']} contribution)")
+            print(f"   Tokens: {region['num_tokens']}")
+
+    print(f"\n{'='*80}")
+    print(f"✅ All analyses complete! Results saved to: {save_dir}")
+    print(f"\nGenerated visualizations:")
+    if save_dir:
+        print(f"   1. {save_dir / 'fine_grained_attention.png'} - Basic attention heatmaps")
+        print(f"   2. {save_dir / 'head_specialization.png'} - Attention head analysis")
+        print(f"   3. {save_dir / 'key_atom_word_pairs.png'} - Top atom-word pairs")
+        print(f"   4. {save_dir / 'attention_statistics.png'} - Statistical analysis")
+        print(f"   5. {save_dir / 'text_semantic_regions.png'} - Text region importance")
+    print(f"{'='*80}\n")
+
+    return {
+        'basic_analysis': analysis,
+        'head_analysis': head_analysis,
+        'pairs_analysis': pairs_analysis,
+        'stats_analysis': stats_analysis,
+        'region_analysis': region_analysis
+    }
 
 
 def main():

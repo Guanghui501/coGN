@@ -830,6 +830,605 @@ class EnhancedInterpretabilityAnalyzer:
 
         return analysis
 
+    def analyze_attention_head_specialization(
+        self,
+        attention_weights,
+        atoms_object,
+        text_tokens,
+        save_path=None
+    ):
+        """
+        分析注意力头的专业化模式
+
+        Args:
+            attention_weights: 细粒度注意力权重字典
+            atoms_object: Atoms对象
+            text_tokens: 文本tokens列表
+            save_path: 保存路径（可选）
+
+        Returns:
+            分析结果字典，包含：
+            - head_patterns: 每个头的主要关注模式
+            - head_diversity: 头之间的多样性分数
+            - head_importance: 每个头的重要性
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import numpy as np
+        from scipy.spatial.distance import cosine
+        from scipy.stats import entropy
+
+        atom_to_text = attention_weights.get('atom_to_text', None)
+        if atom_to_text is None:
+            print("⚠️  没有atom_to_text注意力权重")
+            return None
+
+        # Convert to numpy and get single sample
+        atom_to_text = atom_to_text.cpu().numpy()[0]  # [heads, num_atoms, seq_len]
+        num_heads, num_atoms, seq_len = atom_to_text.shape
+
+        # Get atom elements
+        elements = [str(atoms_object.elements[i]) for i in range(num_atoms)]
+
+        analysis = {
+            'head_patterns': {},
+            'head_diversity': 0.0,
+            'head_importance': {},
+            'head_entropy': {}
+        }
+
+        # Analyze each head
+        head_vectors = []  # For diversity calculation
+
+        for head in range(num_heads):
+            head_attn = atom_to_text[head]  # [num_atoms, seq_len]
+
+            # Calculate entropy (lower = more focused)
+            head_entropy_val = entropy(head_attn.flatten() + 1e-10)
+            analysis['head_entropy'][f'head_{head+1}'] = float(head_entropy_val)
+
+            # Find top words for this head
+            word_importance = head_attn.mean(axis=0)  # Average over atoms
+            top_word_indices = word_importance.argsort()[-5:][::-1]
+            top_words = [(text_tokens[idx], float(word_importance[idx])) for idx in top_word_indices]
+
+            # Find top atoms for this head
+            atom_importance = head_attn.mean(axis=1)  # Average over words
+            top_atom_indices = atom_importance.argsort()[-3:][::-1]
+            top_atoms = [(f"{elements[idx]}_{idx}", float(atom_importance[idx])) for idx in top_atom_indices]
+
+            # Overall importance (sum of attention)
+            head_importance_score = float(head_attn.sum())
+            analysis['head_importance'][f'head_{head+1}'] = head_importance_score
+
+            # Store pattern
+            analysis['head_patterns'][f'head_{head+1}'] = {
+                'top_words': top_words,
+                'top_atoms': top_atoms,
+                'entropy': float(head_entropy_val),
+                'focus_level': 'high' if head_entropy_val < np.median([analysis['head_entropy'][f'head_{h+1}'] for h in range(head+1)]) else 'low'
+            }
+
+            # Store flattened attention for diversity calculation
+            head_vectors.append(head_attn.flatten())
+
+        # Calculate head diversity (average pairwise cosine distance)
+        head_vectors = np.array(head_vectors)
+        diversity_scores = []
+        for i in range(num_heads):
+            for j in range(i+1, num_heads):
+                dist = cosine(head_vectors[i], head_vectors[j])
+                diversity_scores.append(dist)
+
+        analysis['head_diversity'] = float(np.mean(diversity_scores)) if diversity_scores else 0.0
+
+        # Visualize head specialization
+        if save_path:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+            # 1. Head importance bar chart
+            heads = list(analysis['head_importance'].keys())
+            importances = list(analysis['head_importance'].values())
+            axes[0, 0].bar(range(len(heads)), importances, color='steelblue')
+            axes[0, 0].set_xticks(range(len(heads)))
+            axes[0, 0].set_xticklabels(heads, rotation=45)
+            axes[0, 0].set_ylabel('Total Attention Weight')
+            axes[0, 0].set_title('Attention Head Importance')
+            axes[0, 0].grid(axis='y', alpha=0.3)
+
+            # 2. Head entropy (focus level)
+            entropies = list(analysis['head_entropy'].values())
+            axes[0, 1].bar(range(len(heads)), entropies, color='coral')
+            axes[0, 1].set_xticks(range(len(heads)))
+            axes[0, 1].set_xticklabels(heads, rotation=45)
+            axes[0, 1].set_ylabel('Entropy (lower = more focused)')
+            axes[0, 1].set_title('Attention Head Focus Level')
+            axes[0, 1].grid(axis='y', alpha=0.3)
+
+            # 3. Top words per head heatmap
+            top_words_matrix = np.zeros((num_heads, 5))
+            word_labels = []
+            for head in range(num_heads):
+                head_key = f'head_{head+1}'
+                top_words = analysis['head_patterns'][head_key]['top_words']
+                for i, (word, score) in enumerate(top_words):
+                    top_words_matrix[head, i] = score
+                    if head == 0:
+                        word_labels.append(word[:15])  # Truncate long words
+
+            sns.heatmap(top_words_matrix, ax=axes[1, 0], cmap='YlOrRd',
+                       xticklabels=word_labels, yticklabels=heads,
+                       annot=True, fmt='.3f', cbar_kws={'label': 'Attention Weight'})
+            axes[1, 0].set_title('Top Words per Head')
+            axes[1, 0].set_xlabel('Words')
+            axes[1, 0].set_ylabel('Attention Head')
+
+            # 4. Head diversity visualization (similarity matrix)
+            similarity_matrix = np.zeros((num_heads, num_heads))
+            for i in range(num_heads):
+                for j in range(num_heads):
+                    if i == j:
+                        similarity_matrix[i, j] = 1.0
+                    else:
+                        similarity_matrix[i, j] = 1.0 - cosine(head_vectors[i], head_vectors[j])
+
+            sns.heatmap(similarity_matrix, ax=axes[1, 1], cmap='coolwarm',
+                       xticklabels=heads, yticklabels=heads,
+                       annot=True, fmt='.2f', vmin=0, vmax=1,
+                       cbar_kws={'label': 'Similarity (1-cosine distance)'})
+            axes[1, 1].set_title(f'Head Similarity Matrix\nDiversity Score: {analysis["head_diversity"]:.3f}')
+            axes[1, 1].set_xlabel('Attention Head')
+            axes[1, 1].set_ylabel('Attention Head')
+
+            plt.suptitle('Attention Head Specialization Analysis', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"✅ 注意力头专业化分析已保存: {save_path}")
+            plt.close()
+
+        return analysis
+
+    def analyze_key_atom_word_pairs(
+        self,
+        attention_weights,
+        atoms_object,
+        text_tokens,
+        top_k=20,
+        save_path=None
+    ):
+        """
+        识别最关键的原子-词语对及其语义类别
+
+        Args:
+            attention_weights: 细粒度注意力权重字典
+            atoms_object: Atoms对象
+            text_tokens: 文本tokens列表
+            top_k: 返回top-k对
+            save_path: 保存路径（可选）
+
+        Returns:
+            分析结果字典，包含：
+            - top_pairs: 最强的原子-词语对
+            - semantic_categories: 自动分类的语义类别
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        atom_to_text = attention_weights.get('atom_to_text', None)
+        if atom_to_text is None:
+            print("⚠️  没有atom_to_text注意力权重")
+            return None
+
+        # Convert to numpy and get single sample
+        atom_to_text = atom_to_text.cpu().numpy()[0]  # [heads, num_atoms, seq_len]
+
+        # Average over heads
+        atom_to_text_avg = atom_to_text.mean(axis=0)  # [num_atoms, seq_len]
+        num_atoms, seq_len = atom_to_text_avg.shape
+
+        # Get atom elements
+        elements = [str(atoms_object.elements[i]) for i in range(num_atoms)]
+
+        # Find top-k atom-word pairs
+        flat_attention = atom_to_text_avg.flatten()
+        top_indices = flat_attention.argsort()[-top_k:][::-1]
+
+        top_pairs = []
+        for idx in top_indices:
+            atom_idx = idx // seq_len
+            word_idx = idx % seq_len
+            atom_name = f"{elements[atom_idx]}_{atom_idx}"
+            word = text_tokens[word_idx]
+            weight = float(atom_to_text_avg[atom_idx, word_idx])
+            top_pairs.append({
+                'atom': atom_name,
+                'word': word,
+                'weight': weight,
+                'atom_idx': int(atom_idx),
+                'word_idx': int(word_idx)
+            })
+
+        # Semantic categorization (simple rule-based)
+        element_keywords = set(['mg', 'sn', 'ge', 'o', 'na', 'ba', 'bi', 'si', 'al', 'fe', 'cu', 'zn'])
+        structure_keywords = set(['cubic', 'monoclinic', 'orthorhombic', 'hexagonal', 'tetragonal',
+                                  'triclinic', 'group', 'space', 'symmetry'])
+        bonding_keywords = set(['bond', 'bonded', 'length', 'distance', 'å', 'coordination', 'coordinate'])
+        geometry_keywords = set(['geometry', 'octahedral', 'tetrahedral', 'planar', 'sharing',
+                               'corner', 'edge', 'face'])
+
+        semantic_categories = {
+            'element_identification': [],
+            'structure_information': [],
+            'bonding_information': [],
+            'geometry_information': [],
+            'other': []
+        }
+
+        for pair in top_pairs:
+            word_lower = pair['word'].lower().replace('#', '')
+            categorized = False
+
+            if word_lower in element_keywords or any(word_lower.startswith(elem) for elem in element_keywords):
+                semantic_categories['element_identification'].append(pair)
+                categorized = True
+            elif word_lower in structure_keywords:
+                semantic_categories['structure_information'].append(pair)
+                categorized = True
+            elif word_lower in bonding_keywords or 'bond' in word_lower:
+                semantic_categories['bonding_information'].append(pair)
+                categorized = True
+            elif word_lower in geometry_keywords:
+                semantic_categories['geometry_information'].append(pair)
+                categorized = True
+
+            if not categorized:
+                semantic_categories['other'].append(pair)
+
+        # Calculate category statistics
+        category_stats = {}
+        for cat, pairs in semantic_categories.items():
+            if pairs:
+                total_weight = sum(p['weight'] for p in pairs)
+                category_stats[cat] = {
+                    'count': len(pairs),
+                    'total_weight': float(total_weight),
+                    'percentage': float(len(pairs) / len(top_pairs) * 100)
+                }
+
+        analysis = {
+            'top_pairs': top_pairs,
+            'semantic_categories': semantic_categories,
+            'category_stats': category_stats
+        }
+
+        # Visualize
+        if save_path:
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+            # 1. Top pairs bar chart
+            pairs_labels = [f"{p['atom']}→{p['word'][:10]}" for p in top_pairs[:15]]
+            pairs_weights = [p['weight'] for p in top_pairs[:15]]
+
+            axes[0].barh(range(len(pairs_labels)), pairs_weights, color='steelblue')
+            axes[0].set_yticks(range(len(pairs_labels)))
+            axes[0].set_yticklabels(pairs_labels, fontsize=9)
+            axes[0].set_xlabel('Attention Weight', fontsize=10)
+            axes[0].set_title(f'Top {len(pairs_labels)} Atom-Word Pairs', fontsize=12, fontweight='bold')
+            axes[0].invert_yaxis()
+            axes[0].grid(axis='x', alpha=0.3)
+
+            # 2. Semantic category pie chart
+            cat_labels = []
+            cat_sizes = []
+            cat_colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#ff99cc']
+
+            for i, (cat, stats) in enumerate(category_stats.items()):
+                cat_name = cat.replace('_', ' ').title()
+                cat_labels.append(f"{cat_name}\n({stats['count']} pairs)")
+                cat_sizes.append(stats['percentage'])
+
+            if cat_sizes:
+                axes[1].pie(cat_sizes, labels=cat_labels, autopct='%1.1f%%',
+                           colors=cat_colors[:len(cat_sizes)], startangle=90)
+                axes[1].set_title('Semantic Category Distribution', fontsize=12, fontweight='bold')
+
+            plt.suptitle('Key Atom-Word Pairs Analysis', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"✅ 关键原子-词语对分析已保存: {save_path}")
+            plt.close()
+
+        return analysis
+
+    def analyze_attention_statistics(
+        self,
+        attention_weights,
+        atoms_object,
+        text_tokens,
+        save_path=None
+    ):
+        """
+        分析注意力分布的统计特性
+
+        Args:
+            attention_weights: 细粒度注意力权重字典
+            atoms_object: Atoms对象
+            text_tokens: 文本tokens列表
+            save_path: 保存路径（可选）
+
+        Returns:
+            统计分析结果字典
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import numpy as np
+        from scipy.stats import entropy
+
+        atom_to_text = attention_weights.get('atom_to_text', None)
+        if atom_to_text is None:
+            print("⚠️  没有atom_to_text注意力权重")
+            return None
+
+        # Convert to numpy and get single sample
+        atom_to_text = atom_to_text.cpu().numpy()[0]  # [heads, num_atoms, seq_len]
+        num_heads, num_atoms, seq_len = atom_to_text.shape
+
+        # Get atom elements
+        elements = [str(atoms_object.elements[i]) for i in range(num_atoms)]
+
+        # Calculate statistics
+        stats = {
+            'global_stats': {},
+            'per_atom_stats': {},
+            'per_head_stats': {}
+        }
+
+        # Global statistics
+        all_attention = atom_to_text.flatten()
+        stats['global_stats'] = {
+            'mean': float(np.mean(all_attention)),
+            'std': float(np.std(all_attention)),
+            'min': float(np.min(all_attention)),
+            'max': float(np.max(all_attention)),
+            'median': float(np.median(all_attention)),
+            'entropy': float(entropy(all_attention + 1e-10)),
+            'sparsity': float(np.sum(all_attention < 0.01) / len(all_attention) * 100),  # % below threshold
+            'effective_connections': float(np.sum(all_attention >= 0.01) / len(all_attention) * 100)
+        }
+
+        # Per-atom statistics (averaged over heads)
+        atom_to_text_avg = atom_to_text.mean(axis=0)  # [num_atoms, seq_len]
+        for i, element in enumerate(elements):
+            atom_attn = atom_to_text_avg[i]
+            stats['per_atom_stats'][f"{element}_{i}"] = {
+                'entropy': float(entropy(atom_attn + 1e-10)),
+                'max_attention': float(np.max(atom_attn)),
+                'focus_level': 'high' if entropy(atom_attn + 1e-10) < stats['global_stats']['entropy'] else 'low',
+                'top_word': text_tokens[np.argmax(atom_attn)],
+                'top_word_weight': float(np.max(atom_attn))
+            }
+
+        # Per-head statistics
+        for head in range(num_heads):
+            head_attn = atom_to_text[head]
+            stats['per_head_stats'][f'head_{head+1}'] = {
+                'entropy': float(entropy(head_attn.flatten() + 1e-10)),
+                'mean': float(np.mean(head_attn)),
+                'sparsity': float(np.sum(head_attn < 0.01) / head_attn.size * 100)
+            }
+
+        # Visualize
+        if save_path:
+            fig = plt.figure(figsize=(16, 10))
+            gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+
+            # 1. Attention distribution histogram
+            ax1 = fig.add_subplot(gs[0, :2])
+            ax1.hist(all_attention, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
+            ax1.axvline(stats['global_stats']['mean'], color='red', linestyle='--',
+                       label=f"Mean: {stats['global_stats']['mean']:.4f}")
+            ax1.axvline(stats['global_stats']['median'], color='green', linestyle='--',
+                       label=f"Median: {stats['global_stats']['median']:.4f}")
+            ax1.set_xlabel('Attention Weight')
+            ax1.set_ylabel('Frequency')
+            ax1.set_title('Global Attention Distribution')
+            ax1.legend()
+            ax1.grid(alpha=0.3)
+
+            # 2. Global stats table
+            ax2 = fig.add_subplot(gs[0, 2])
+            ax2.axis('off')
+            stats_text = f"""
+Global Statistics:
+─────────────────
+Mean:     {stats['global_stats']['mean']:.4f}
+Std:      {stats['global_stats']['std']:.4f}
+Entropy:  {stats['global_stats']['entropy']:.2f}
+Sparsity: {stats['global_stats']['sparsity']:.1f}%
+Effective: {stats['global_stats']['effective_connections']:.1f}%
+"""
+            ax2.text(0.1, 0.5, stats_text, fontsize=10, verticalalignment='center',
+                    fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+            # 3. Per-atom entropy
+            ax3 = fig.add_subplot(gs[1, :])
+            atom_names = list(stats['per_atom_stats'].keys())
+            atom_entropies = [stats['per_atom_stats'][a]['entropy'] for a in atom_names]
+            colors = ['coral' if stats['per_atom_stats'][a]['focus_level'] == 'high' else 'steelblue'
+                     for a in atom_names]
+
+            ax3.bar(range(len(atom_names)), atom_entropies, color=colors)
+            ax3.axhline(stats['global_stats']['entropy'], color='red', linestyle='--',
+                       label=f"Global entropy: {stats['global_stats']['entropy']:.2f}")
+            ax3.set_xticks(range(len(atom_names)))
+            ax3.set_xticklabels(atom_names, rotation=45, ha='right')
+            ax3.set_ylabel('Entropy (lower = more focused)')
+            ax3.set_title('Per-Atom Attention Entropy (Coral = High Focus, Blue = Low Focus)')
+            ax3.legend()
+            ax3.grid(axis='y', alpha=0.3)
+
+            # 4. Per-head statistics
+            ax4 = fig.add_subplot(gs[2, 0])
+            head_names = list(stats['per_head_stats'].keys())
+            head_entropies = [stats['per_head_stats'][h]['entropy'] for h in head_names]
+            ax4.bar(range(len(head_names)), head_entropies, color='#99cc99')
+            ax4.set_xticks(range(len(head_names)))
+            ax4.set_xticklabels(head_names, rotation=45, ha='right')
+            ax4.set_ylabel('Entropy')
+            ax4.set_title('Per-Head Entropy')
+            ax4.grid(axis='y', alpha=0.3)
+
+            # 5. Per-head sparsity
+            ax5 = fig.add_subplot(gs[2, 1])
+            head_sparsity = [stats['per_head_stats'][h]['sparsity'] for h in head_names]
+            ax5.bar(range(len(head_names)), head_sparsity, color='#ff9999')
+            ax5.set_xticks(range(len(head_names)))
+            ax5.set_xticklabels(head_names, rotation=45, ha='right')
+            ax5.set_ylabel('Sparsity (%)')
+            ax5.set_title('Per-Head Sparsity')
+            ax5.grid(axis='y', alpha=0.3)
+
+            # 6. Box plot for attention distribution
+            ax6 = fig.add_subplot(gs[2, 2])
+            ax6.boxplot(all_attention, vert=True, patch_artist=True,
+                       boxprops=dict(facecolor='lightblue'))
+            ax6.set_ylabel('Attention Weight')
+            ax6.set_title('Attention Distribution\n(Box Plot)')
+            ax6.grid(axis='y', alpha=0.3)
+
+            plt.suptitle('Attention Distribution Statistics', fontsize=14, fontweight='bold')
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"✅ 注意力统计分析已保存: {save_path}")
+            plt.close()
+
+        return stats
+
+    def analyze_text_semantic_regions(
+        self,
+        attention_weights,
+        atoms_object,
+        text,
+        text_tokens,
+        save_path=None
+    ):
+        """
+        分析文本不同语义区域的重要性
+
+        Args:
+            attention_weights: 细粒度注意力权重字典
+            atoms_object: Atoms对象
+            text: 原始文本字符串
+            text_tokens: 文本tokens列表
+            save_path: 保存路径（可选）
+
+        Returns:
+            分析结果字典
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        atom_to_text = attention_weights.get('atom_to_text', None)
+        if atom_to_text is None:
+            print("⚠️  没有atom_to_text注意力权重")
+            return None
+
+        # Convert to numpy and get single sample
+        atom_to_text = atom_to_text.cpu().numpy()[0]  # [heads, num_atoms, seq_len]
+
+        # Average over heads and atoms
+        word_importance = atom_to_text.mean(axis=(0, 1))  # [seq_len]
+
+        # Simple sentence segmentation (by period, or fixed length)
+        sentences = text.split('. ')
+
+        # Map tokens to sentences
+        token_to_sentence = []
+        current_pos = 0
+        current_sentence = 0
+
+        for token in text_tokens:
+            # Simple heuristic: check if we've moved to next sentence
+            token_clean = token.replace('#', '').lower()
+            if current_sentence < len(sentences) - 1:
+                if sentences[current_sentence].lower().find(token_clean) == -1:
+                    current_sentence += 1
+            token_to_sentence.append(current_sentence)
+
+        # Aggregate importance by sentence
+        sentence_importance = {}
+        for i, sent_idx in enumerate(token_to_sentence):
+            if i < len(word_importance):
+                if sent_idx not in sentence_importance:
+                    sentence_importance[sent_idx] = []
+                sentence_importance[sent_idx].append(word_importance[i])
+
+        # Calculate sentence-level statistics
+        regions = []
+        for sent_idx in sorted(sentence_importance.keys()):
+            if sent_idx < len(sentences):
+                importance_scores = sentence_importance[sent_idx]
+                regions.append({
+                    'region_id': sent_idx,
+                    'text': sentences[sent_idx][:100] + ('...' if len(sentences[sent_idx]) > 100 else ''),
+                    'avg_importance': float(np.mean(importance_scores)),
+                    'max_importance': float(np.max(importance_scores)),
+                    'num_tokens': len(importance_scores),
+                    'contribution': 'high' if np.mean(importance_scores) > word_importance.mean() else 'medium'
+                })
+
+        # Sort by importance
+        regions = sorted(regions, key=lambda x: x['avg_importance'], reverse=True)
+
+        analysis = {
+            'regions': regions,
+            'word_importance': word_importance.tolist(),
+            'text_tokens': text_tokens
+        }
+
+        # Visualize
+        if save_path:
+            fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+
+            # 1. Token-level importance over sequence
+            axes[0].plot(range(len(word_importance)), word_importance, color='steelblue', linewidth=2)
+            axes[0].fill_between(range(len(word_importance)), word_importance, alpha=0.3)
+            axes[0].axhline(word_importance.mean(), color='red', linestyle='--',
+                          label=f'Mean: {word_importance.mean():.4f}')
+            axes[0].set_xlabel('Token Position', fontsize=10)
+            axes[0].set_ylabel('Attention Weight', fontsize=10)
+            axes[0].set_title('Token-Level Importance Over Sequence', fontsize=12, fontweight='bold')
+            axes[0].legend()
+            axes[0].grid(alpha=0.3)
+
+            # 2. Sentence/region importance
+            if regions:
+                region_labels = [f"Region {r['region_id']+1}" for r in regions[:10]]
+                region_scores = [r['avg_importance'] for r in regions[:10]]
+                colors_map = {'high': 'coral', 'medium': 'steelblue', 'low': 'lightgray'}
+                colors = [colors_map.get(r['contribution'], 'lightgray') for r in regions[:10]]
+
+                axes[1].barh(range(len(region_labels)), region_scores, color=colors)
+                axes[1].set_yticks(range(len(region_labels)))
+                axes[1].set_yticklabels(region_labels, fontsize=9)
+                axes[1].set_xlabel('Average Attention Weight', fontsize=10)
+                axes[1].set_title('Semantic Region Importance', fontsize=12, fontweight='bold')
+                axes[1].invert_yaxis()
+                axes[1].grid(axis='x', alpha=0.3)
+
+                # Add text preview on the right
+                for i, region in enumerate(regions[:10]):
+                    text_preview = region['text'][:40] + '...'
+                    axes[1].text(region_scores[i] + 0.001, i, text_preview,
+                               va='center', fontsize=7, style='italic')
+
+            plt.suptitle('Text Semantic Region Analysis', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"✅ 文本语义区域分析已保存: {save_path}")
+            plt.close()
+
+        return analysis
+
 
 def batch_interpretability_analysis(
     analyzer,
