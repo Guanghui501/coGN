@@ -285,8 +285,22 @@ class GraphStructureAnalyzer:
                 for u, v in subgraph.edges():
                     # 找到对应的DGL边
                     edge_ids = g.edge_ids(u, v)
-                    if len(edge_ids) > 0:
-                        subgraph_edge_importance += edge_importance[edge_ids[0]]
+                    # Handle different return types from edge_ids (int, scalar tensor, or 1D tensor)
+                    if hasattr(edge_ids, 'dim'):
+                        # It's a tensor
+                        if edge_ids.dim() == 0:
+                            # Scalar tensor
+                            edge_id = edge_ids.item()
+                        else:
+                            # 1D tensor
+                            edge_id = edge_ids[0].item()
+                    elif isinstance(edge_ids, int):
+                        # Already an int
+                        edge_id = edge_ids
+                    else:
+                        # List or other sequence
+                        edge_id = edge_ids[0]
+                    subgraph_edge_importance += edge_importance[edge_id]
 
                 # 总重要性
                 total_importance = subgraph_atom_importance + subgraph_edge_importance
