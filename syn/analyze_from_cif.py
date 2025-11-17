@@ -65,6 +65,12 @@ def infer_model_config_from_state_dict(state_dict):
         'classification': False
     }
 
+    # 调试：打印 middle_fusion 相关的键
+    print(f"\n  🔍 调试: middle_fusion 相关的键:")
+    fusion_keys = [k for k in state_dict.keys() if 'middle_fusion' in k and 'gate' in k]
+    for k in sorted(fusion_keys)[:5]:  # 只显示前5个
+        print(f"     {k}: {state_dict[k].shape}")
+
     # 推断 atom_input_features（从 atom_embedding 层的权重形状）
     if 'atom_embedding.layer.0.weight' in state_dict:
         # weight shape is [out_features, in_features]
@@ -73,15 +79,29 @@ def infer_model_config_from_state_dict(state_dict):
         config_kwargs['atom_input_features'] = atom_input_features
         print(f"  🔍 检测到 atom_input_features: {atom_input_features}")
 
-    # 推断 hidden_features（从 ALIGNN 层的权重，比 atom_embedding 更准确）
-    # ALIGNNConv 使用 EdgeGatedGraphConv，检查 node_update 的权重
-    if 'alignn_layers.0.node_update.src_gate.weight' in state_dict:
-        # EdgeGatedGraphConv 的 src_gate 输入维度就是 hidden_features
+    # 推断 hidden_features（优先从 middle_fusion gate 权重，最准确）
+    # middle_fusion gate: Linear(node_dim + text_dim, node_dim)
+    # gate.0.weight shape is [node_dim, node_dim + text_dim]
+    hidden_features_found = False
+
+    # 尝试从 middle_fusion gate 推断（最准确的方法）
+    gate_keys = [k for k in state_dict.keys() if 'middle_fusion_modules' in k and 'gate.0.weight' in k]
+    if gate_keys:
+        gate_weight = state_dict[gate_keys[0]]
+        hidden_features = gate_weight.shape[0]  # 输出维度 = node_dim = hidden_features
+        config_kwargs['hidden_features'] = hidden_features
+        print(f"  🔍 检测到 hidden_features (from middle_fusion gate): {hidden_features}")
+        hidden_features_found = True
+
+    # 尝试从 ALIGNN 层推断
+    if not hidden_features_found and 'alignn_layers.0.node_update.src_gate.weight' in state_dict:
         hidden_features = state_dict['alignn_layers.0.node_update.src_gate.weight'].shape[1]
         config_kwargs['hidden_features'] = hidden_features
         print(f"  🔍 检测到 hidden_features (from ALIGNN layer): {hidden_features}")
-    elif 'atom_embedding.layer.0.weight' in state_dict:
-        # 回退到从 atom_embedding 推断
+        hidden_features_found = True
+
+    # 回退到从 atom_embedding 推断
+    if not hidden_features_found and 'atom_embedding.layer.0.weight' in state_dict:
         hidden_features = state_dict['atom_embedding.layer.0.weight'].shape[0]
         config_kwargs['hidden_features'] = hidden_features
         print(f"  🔍 检测到 hidden_features (from atom_embedding): {hidden_features}")
