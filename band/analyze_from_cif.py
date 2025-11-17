@@ -71,6 +71,19 @@ def infer_model_config_from_state_dict(state_dict):
     for k in sorted(fusion_keys)[:5]:  # 只显示前5个
         print(f"     {k}: {state_dict[k].shape}")
 
+    # 调试：打印 ALIGNN 层的输出维度（检查 layer 2 之前的层）
+    print(f"\n  🔍 调试: ALIGNN layers 输出维度:")
+    for layer_idx in [0, 1, 2]:
+        key = f'alignn_layers.{layer_idx}.node_update.dst_update.bias'
+        if key in state_dict:
+            out_dim = state_dict[key].shape[0]
+            print(f"     alignn_layers.{layer_idx} 输出维度: {out_dim}")
+
+    # 检查 atom_embedding 输出维度
+    if 'atom_embedding.layer.0.bias' in state_dict:
+        emb_out = state_dict['atom_embedding.layer.0.bias'].shape[0]
+        print(f"     atom_embedding 输出维度: {emb_out}")
+
     # 推断 atom_input_features（从 atom_embedding 层的权重形状）
     if 'atom_embedding.layer.0.weight' in state_dict:
         # weight shape is [out_features, in_features]
