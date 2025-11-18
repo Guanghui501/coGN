@@ -171,18 +171,11 @@ class MiddleFusionModule(nn.Module):
         Returns:
             Enhanced node features with same shape as input
         """
-        # 调试输出
-        print(f"\n  🔍 MiddleFusionModule.forward 调试:")
-        print(f"     node_feat.shape: {node_feat.shape}")
-        print(f"     text_feat.shape: {text_feat.shape}")
-        print(f"     batch_num_nodes: {batch_num_nodes}")
-
         batch_size = text_feat.size(0)
         num_nodes = node_feat.size(0)
 
         # Transform text features
         text_transformed = self.text_transform(text_feat)  # [batch_size, node_dim]
-        print(f"     text_transformed.shape: {text_transformed.shape}")
 
         # Case 1: Batched graphs (total_nodes != batch_size)
         if num_nodes != batch_size:
@@ -203,11 +196,8 @@ class MiddleFusionModule(nn.Module):
         else:
             text_broadcasted = text_transformed  # [batch_size, node_dim]
 
-        print(f"     text_broadcasted.shape: {text_broadcasted.shape}")
-
         # Gated fusion
         gate_input = torch.cat([node_feat, text_broadcasted], dim=-1)  # [*, node_dim*2]
-        print(f"     gate_input.shape: {gate_input.shape}")
         gate_values = self.gate(gate_input)  # [*, node_dim]
 
         # Apply gating and residual connection
