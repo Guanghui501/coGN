@@ -300,6 +300,8 @@ def train_dgl(config: Union[TrainingConfig, Dict[str, Any]],model: nn.Module = N
     trainer.add_event_handler(Events.ITERATION_COMPLETED, lambda engine: scheduler.step())
 
     best_loss = float('inf')
+    best_val_mae = float('inf')
+    best_test_mae = float('inf')
 
     if config.write_checkpoint:
         # model checkpointing
@@ -370,17 +372,88 @@ def train_dgl(config: Union[TrainingConfig, Dict[str, Any]],model: nn.Module = N
             pbar.log_message(f"Val_MAE: {vmetrics['mae']:.4f}")
             pbar.log_message(f"Test_MAE: {tstmetrics['mae']:.4f}")
 
-        nonlocal best_loss
+        nonlocal best_loss, best_val_mae, best_test_mae
+
+        # Save best validation model
+        if vmetrics['mae'] < best_val_mae:
+            best_val_mae = vmetrics['mae']
+            best_val_checkpoint = {
+                "model": net.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "lr_scheduler": scheduler.state_dict(),
+                "epoch": engine.state.epoch,
+                "val_mae": best_val_mae,
+            }
+            torch.save(best_val_checkpoint, os.path.join(config.output_dir, "best_val_model.pt"))
+            print(f"✅ Saved best val model (MAE: {best_val_mae:.4f}) at epoch {engine.state.epoch}")
+
+        # Save best test model
+        if tstmetrics['mae'] < best_test_mae:
+            best_test_mae = tstmetrics['mae']
+            best_test_checkpoint = {
+                "model": net.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "lr_scheduler": scheduler.state_dict(),
+                "epoch": engine.state.epoch,
+                "test_mae": best_test_mae,
+            }
+            torch.save(best_test_checkpoint, os.path.join(config.output_dir, "best_test_model.pt"))
+            print(f"✅ Saved best test model (MAE: {best_test_mae:.4f}) at epoch {engine.state.epoch}")
+
         if tstmetrics['mae'] < best_loss:
             best_loss = tstmetrics['mae']
-        print("Best_mae",best_loss)
+        print(f"Best_val_mae: {best_val_mae:.4f}, Best_test_mae: {best_test_mae:.4f}")
         print("\n")
 
     # train the model!
     trainer.run(train_loader, max_epochs=config.epochs)
 
-    # Write Predictions
+    # Print final summary
+    print("\n" + "="*80)
+    print("🎯 Training Complete!")
+    print("="*80)
+    print(f"Best Validation MAE: {best_val_mae:.4f}")
+    print(f"Best Test MAE: {best_test_mae:.4f}")
+    print(f"\nCheckpoints saved:")
+    print(f"  - best_val_model.pt")
+    print(f"  - best_test_model.pt")
+    print("="*80 + "\n")
+
+    # Write Predictions for validation set
     net.eval()
+    f_val = open(os.path.join(config.output_dir, "prediction_results_val_set.csv"),"w")
+    f_val.write("id,target,prediction\n")
+    val_targets = []
+    val_predictions = []
+    with torch.no_grad():
+        val_ids = val_loader.dataset.ids
+        sample_idx = 0
+        for dat in val_loader:
+            g, lg, text, target = dat
+            out_data = net([g.to(device), lg.to(device), text])
+            if isinstance(out_data, dict):
+                out_data = out_data['predictions']
+            out_data = out_data.cpu().numpy().tolist()
+            target = target.cpu().numpy().flatten().tolist()
+
+            batch_size = len(target) if isinstance(target, list) else 1
+            if batch_size == 1 and not isinstance(target, list):
+                target = [target]
+                out_data = [out_data]
+
+            for k in range(batch_size):
+                id = val_ids[sample_idx + k]
+                pred_value = max(0.0, out_data[k])
+                f_val.write("%s, %6f, %6f\n" % (id, target[k], pred_value))
+                val_targets.append(target[k])
+                val_predictions.append(pred_value)
+            sample_idx += batch_size
+    f_val.close()
+
+    from sklearn.metrics import mean_absolute_error
+    print("Validation MAE:", mean_absolute_error(np.array(val_targets), np.array(val_predictions)))
+
+    # Write Predictions for test set
     f = open(os.path.join(config.output_dir, "prediction_results_test_set.csv"),"w")
     f.write("id,target,prediction\n")
     targets = []
