@@ -794,8 +794,8 @@ class ALIGNN(nn.Module):
                 num_heads=config.cross_modal_num_heads,
                 dropout=config.cross_modal_dropout
             )
-            # Fusion layer after cross-modal attention (concatenate both modalities)
-            self.fc1 = nn.Linear(128, 64)  # Concatenated: 64 + 64 = 128
+            # Fusion layer after cross-modal attention (average fusion)
+            self.fc1 = nn.Linear(64, 64)  # Averaged: both are 64-dim
             self.fc = nn.Linear(64, config.output_features)
         else:
             # Original simple concatenation
@@ -952,8 +952,8 @@ class ALIGNN(nn.Module):
             else:
                 enhanced_graph, enhanced_text = self.cross_modal_attention(h, text_emb)
 
-            # Concatenate enhanced features (preserve full information)
-            h = torch.cat([enhanced_graph, enhanced_text], dim=1)  # [batch, 128]
+            # Average fusion of enhanced features
+            h = (enhanced_graph + enhanced_text) / 2  # [batch, 64]
             h = F.relu(self.fc1(h))
             out = self.fc(h)
         else:
