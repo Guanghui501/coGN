@@ -38,6 +38,7 @@ if [ -z "$experiment" ]; then
     echo "  A1  - 仅晚期融合"
     echo "  A2  - 纯TEXT (仅文本特征)"
     echo "  A3  - 仅细粒度注意力"
+    echo "  A7  - 仅中期融合"
     echo "  A4  - 细粒度+晚期融合 [Baseline]"
     echo "  A5  - 中期+晚期融合"
     echo "  A6  - 全融合 (细粒度+晚期+中期)"
@@ -287,6 +288,36 @@ case $experiment in
             --middle_fusion_num_heads 2 \
             --middle_fusion_dropout 0.1 \
             --output_dir ./ablation_A6_full_fusion/ \
+            --num_workers $NUM_WORKERS \
+            --random_seed $SEED
+        ;;
+
+    # A7: 仅中期融合
+    "A7")
+        echo "实验 A7: 仅中期融合"
+        python train_with_cross_modal_attention.py \
+            --root_dir $ROOT_DIR \
+            --dataset $DATASET \
+            --property $PROPERTY \
+            --train_ratio $TRAIN_RATIO \
+            --val_ratio $VAL_RATIO \
+            --test_ratio $TEST_RATIO \
+            --batch_size $BATCH_SIZE \
+            --epochs $EPOCHS \
+            --learning_rate $LR \
+            --weight_decay $WEIGHT_DECAY \
+            --warmup_steps $WARMUP_STEPS \
+            --alignn_layers 4 \
+            --gcn_layers 4 \
+            --hidden_features 256 \
+            --use_fine_grained_attention 0 \
+            --use_cross_modal 0 \
+            --use_middle_fusion 1 \
+            --middle_fusion_layers "2" \
+            --middle_fusion_hidden_dim 128 \
+            --middle_fusion_num_heads 2 \
+            --middle_fusion_dropout 0.1 \
+            --output_dir ./ablation_A7_middle_only/ \
             --num_workers $NUM_WORKERS \
             --random_seed $SEED
         ;;
