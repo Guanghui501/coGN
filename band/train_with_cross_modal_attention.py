@@ -145,6 +145,16 @@ def get_parser():
     parser.add_argument('--fine_grained_use_projection', type=bool, default=True,
                         help='细粒度注意力是否使用投影层')
 
+    # 消融实验参数
+    parser.add_argument('--text_only', type=int, default=0,
+                        help='是否仅使用文本特征 (0/1)，用于消融实验')
+
+    # 分类任务参数
+    parser.add_argument('--classification', type=int, default=0,
+                        help='是否为分类任务 (0/1)')
+    parser.add_argument('--num_classes', type=int, default=2,
+                        help='分类任务的类别数')
+
     # 对比学习参数
     parser.add_argument('--use_contrastive', type=bool, default=False,
                         help='是否使用对比学习损失')
@@ -440,9 +450,13 @@ def create_config(args):
         fine_grained_num_heads=args.fine_grained_num_heads,
         fine_grained_dropout=args.fine_grained_dropout,
         fine_grained_use_projection=args.fine_grained_use_projection,
+        # 消融实验配置
+        text_only=bool(args.text_only),
+        # 分类任务配置
+        classification=bool(args.classification),
+        num_classes=args.num_classes,
         link="identity",
         zero_inflated=False,
-        classification=False
     )
 
     config = {
@@ -472,7 +486,7 @@ def create_config(args):
         "learning_rate": args.learning_rate,
         "filename": f"{args.dataset}_{args.property}",
         "warmup_steps": args.warmup_steps,
-        "criterion": "mse",
+        "criterion": "cross_entropy" if args.classification else "mse",
         "optimizer": "adamw",
         "scheduler": "onecycle",
 

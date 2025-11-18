@@ -558,6 +558,12 @@ class ALIGNNConfig(BaseSettings):
     contrastive_loss_weight: float = 0.1
     contrastive_temperature: float = 0.1
 
+    # Ablation experiment settings
+    text_only: bool = False  # Use only text features (no graph)
+
+    # Classification settings
+    num_classes: int = 2  # Number of classes for classification
+
     # if link == log, apply `exp` to final outputs
     # to constrain predictions to be positive
     link: Literal["identity", "log", "logit"] = "identity"
@@ -714,6 +720,14 @@ class ALIGNN(nn.Module):
         super().__init__()
         # print(config)
         self.classification = config.classification
+        self.text_only = config.text_only
+        self.num_classes = config.num_classes
+
+        # Determine output features
+        if config.classification:
+            output_features = config.num_classes
+        else:
+            output_features = config.output_features
 
         self.atom_embedding = MLPLayer(config.atom_input_features, config.hidden_features)
 
@@ -776,7 +790,11 @@ class ALIGNN(nn.Module):
 
         # Cross-modal attention module (global level, for backward compatibility)
         self.use_cross_modal_attention = config.use_cross_modal_attention
-        if self.use_cross_modal_attention:
+        if self.text_only:
+            # Text-only mode: use only text features
+            self.fc1 = nn.Linear(64, 64)  # text_emb is 64-dim
+            self.fc = nn.Linear(64, output_features)
+        elif self.use_cross_modal_attention:
             self.cross_modal_attention = CrossModalAttention(
                 graph_dim=64,  # After graph_projection
                 text_dim=64,   # After text_projection
@@ -786,11 +804,11 @@ class ALIGNN(nn.Module):
             )
             # Fusion layer after cross-modal attention (average fusion)
             self.fc1 = nn.Linear(64, 64)  # Averaged: both are 64-dim
-            self.fc = nn.Linear(64, config.output_features)
+            self.fc = nn.Linear(64, output_features)
         else:
             # Original simple concatenation
             self.fc1 = nn.Linear(128, 64)
-            self.fc = nn.Linear(64, config.output_features)
+            self.fc = nn.Linear(64, output_features)
 
         # Contrastive learning module
         self.use_contrastive_loss = config.use_contrastive_loss
@@ -855,6 +873,26 @@ class ALIGNN(nn.Module):
         cls_emb = last_hidden_state[:, 0, :]  # [batch, 768]
         text_emb = self.text_projection(cls_emb)  # [batch, 64]
 
+        # Text-only mode: skip graph processing
+        if self.text_only:
+            h = F.relu(self.fc1(text_emb))
+            out = self.fc(h)
+
+            if self.link:
+                out = self.link(out)
+
+            if self.classification:
+                out = F.softmax(out, dim=-1)
+
+            predictions = torch.squeeze(out)
+
+            if return_features or return_attention:
+                output_dict = {
+                    'predictions': predictions,
+                    'text_features': text_emb,
+                }
+                return output_dict
+            return predictions
 
         # initial node features: atom feature network...
         x = g.ndata.pop("atom_features")
@@ -957,7 +995,7 @@ class ALIGNN(nn.Module):
 
         if self.classification:
             # out = torch.round(torch.sigmoid(out))
-            out = self.softmax(out)
+            out = F.softmax(out, dim=-1)
 
         predictions = torch.squeeze(out)
 

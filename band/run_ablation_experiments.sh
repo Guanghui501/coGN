@@ -36,6 +36,7 @@ if [ -z "$experiment" ]; then
     echo "=== 融合机制消融 (Fusion Mechanism) ==="
     echo "  A0  - 纯GNN (无跨模态融合)"
     echo "  A1  - 仅晚期融合"
+    echo "  A2  - 纯TEXT (仅文本特征)"
     echo "  A3  - 仅细粒度注意力"
     echo "  A4  - 细粒度+晚期融合 [Baseline]"
     echo "  A6  - 全融合 (细粒度+晚期+中期)"
@@ -125,6 +126,33 @@ case $experiment in
             --cross_modal_dropout 0.15 \
             --use_middle_fusion 0 \
             --output_dir ./ablation_A1_late_fusion_only/ \
+            --num_workers $NUM_WORKERS \
+            --random_seed $SEED
+        ;;
+
+    # A2: 纯TEXT (仅文本特征)
+    "A2")
+        echo "实验 A2: 纯TEXT (仅文本特征)"
+        python train_with_cross_modal_attention.py \
+            --root_dir $ROOT_DIR \
+            --dataset $DATASET \
+            --property $PROPERTY \
+            --train_ratio $TRAIN_RATIO \
+            --val_ratio $VAL_RATIO \
+            --test_ratio $TEST_RATIO \
+            --batch_size $BATCH_SIZE \
+            --epochs $EPOCHS \
+            --learning_rate $LR \
+            --weight_decay $WEIGHT_DECAY \
+            --warmup_steps $WARMUP_STEPS \
+            --alignn_layers 4 \
+            --gcn_layers 4 \
+            --hidden_features 256 \
+            --use_fine_grained_attention 0 \
+            --use_cross_modal 0 \
+            --use_middle_fusion 0 \
+            --text_only 1 \
+            --output_dir ./ablation_A2_text_only/ \
             --num_workers $NUM_WORKERS \
             --random_seed $SEED
         ;;
